@@ -31,8 +31,8 @@ def normalize_angle(ang):
 
 @utils.jax_vectorize(signature='(3),(3),(3),(3,3)->()')
 def link_logpdf(xi, xj, y, scale):
-    inv_rot_1 = rotation_matrix_2d(xi[2]).T
-    poserr = inv_rot_1 @ (xj[:2] - xi[:2]) - y[:2]
+    inv_rot_i = rotation_matrix_2d(xi[2]).T
+    poserr = inv_rot_i @ (xj[:2] - xi[:2]) - y[:2]
     angerr = normalize_angle(xj[2:] - xi[2:] - y[2:])
 
     errscaled = scale @ jnp.concatenate((poserr, angerr), -1)
@@ -89,6 +89,19 @@ class Problem:
         
         return cls(i, j, y, cov, x0)
 
+    @property
+    def link_odo(self):
+        link_map = {(int(self.i[k]), int(self.j[k])): k for k in range(self.M)}
+        poses = np.tile(self.x0, (self.N+1, 1))
+        for i in range(self.N):
+            j = i+1
+            k = link_map[i, j]
+            y = self.y[k]
+            rot_i = rotation_matrix_2d(poses[i, 2])
+            poses[j, :2] = poses[i, :2] + rot_i @ y[:2]
+            poses[j, 2] = poses[i, 2] + y[2]
+        return poses
+
     @utils.jax_vectorize_method(signature='(N,3)->(K,3)')
     def prepend_anchor(self, x):
         return jnp.r_[self.x0[None], x]
@@ -133,6 +146,12 @@ class DenseProblem(Problem):
     def elbo_grad(self):
         return jax.jit(jax.grad(self.elbo, (0, 1)))
 
+    @utils.jax_jit_method
+    def elbo_hvp(self, mu, Sld, mu_d, Sld_d, e):
+        primals = mu, Sld, e
+        tangents = mu_d, Sld_d, jnp.zeros_like(e)
+        return jax.jvp(self.elbo_grad, primals, tangents)[1]
+
 
 def load_json(file):
     obj = json.load(file)
@@ -166,9 +185,9 @@ if __name__ == '__main__':
     key = jax.random.PRNGKey(0)
 
     # Create initial guess
-    logdiag0 = jnp.tile(np.log([0.05, 0.05, 0.05]), p.N)
+    logdiag0 = jnp.tile(np.log([0.2, 0.2, 0.025]), p.N)
     Sld0 = jnp.diag(logdiag0)
-    dec = [tbx_pose[1:] + 5e-2 * np.random.randn(p.N, 3), Sld0]
+    dec = [odo_pose[1:], Sld0]
 
     # Perform MAP estimation, if requested
     if args.map:
@@ -190,7 +209,7 @@ if __name__ == '__main__':
     # Initialize stochastic optimization
     mincost = np.inf
     last_save_time = 0
-    sched = lambda i: 1e-4 / (1 + i * 1e-4)
+    sched = lambda i: 1e-3 / (1 + i * 1e-4)
     optimizer = optax.adabelief(sched)
     opt_state = optimizer.init(dec)
     
@@ -198,7 +217,7 @@ if __name__ == '__main__':
         raise SystemExit
 
     # Perform optimization
-    for i in range(1_000_000):
+    for i in range(100_000_000):
         key, subkey = jax.random.split(key)
         e = jax.random.normal(key, (Nsamp, p.N * 3))
 
