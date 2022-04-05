@@ -13,7 +13,7 @@ import jax.numpy as jnp
 import jax.scipy as jsp
 import numpy as np
 import optax
-from scipy import optimize
+from scipy import optimize, stats
 
 import utils
 
@@ -126,15 +126,6 @@ class Problem:
 
 
 class DenseProblem(Problem):
-    @utils.jax_jit_method
-    def elbo(self, mu, Sld, e):
-        logdiag, S = self.assemble_S(Sld)
-        Se = jnp.inner(e, S).reshape(-1, self.N, 3)
-        x = mu + Se
-        logpdf = self.logpdf(x).mean(0)
-        entropy = logdiag.sum()
-        return logpdf + entropy
-
     @staticmethod
     def assemble_S(Sld):
         logdiag = Sld.diagonal()
@@ -147,10 +138,54 @@ class DenseProblem(Problem):
         return jax.jit(jax.grad(self.elbo, (0, 1)))
 
     @utils.jax_jit_method
-    def elbo_hvp(self, mu, Sld, mu_d, Sld_d, e):
-        primals = mu, Sld, e
-        tangents = mu_d, Sld_d, jnp.zeros_like(e)
+    def elbo_hvp(self, mu, Sld, mu_d, Sld_d, *args):
+        primals = mu, Sld, *args
+        tangents = mu_d, Sld_d, *[jnp.zeros_like(a) for a in args]
         return jax.jvp(self.elbo_grad, primals, tangents)[1]
+
+
+class GlobalDenseProblem(DenseProblem):
+    @utils.jax_jit_method
+    def elbo(self, mu, Sld, e):
+        logdiag, S = self.assemble_S(Sld)
+        Se = jnp.inner(e, S).reshape(-1, self.N, 3)
+        x = mu + Se
+        logpdf = self.logpdf(x).mean(0)
+        entropy = logdiag.sum()
+        return logpdf + entropy
+
+
+class LinkwiseDenseProblem(DenseProblem):
+    @utils.jax_jit_method
+    def elbo(self, mu, Sld, e):
+        # Assemble the scale matrix
+        logdiag, S = self.assemble_S(Sld)
+
+        # Anchor the scale matrix and separate its blocks
+        Np1 = self.N + 1
+        S_anchor = jnp.diag(jnp.repeat(1e-8, 3))
+        S_anchored = jsp.linalg.block_diag(S_anchor, S)
+        S_blk = S_anchored.reshape(Np1, 3, Np1, 3).swapaxes(1, 2)
+        ST_blk = S_blk.swapaxes(-1, -2)
+
+        # Build the joint covariance matrix for each link's node pair
+        cov_node = jnp.sum(S_blk @ ST_blk, axis=1)
+        cov_cross_link = jnp.sum(S_blk[self.i] @ ST_blk[self.j], axis=1)
+        cov_cross_link_T = cov_cross_link.swapaxes(-1, -2)
+        cov_link = jnp.block([[cov_node[self.i], cov_cross_link],
+                              [cov_cross_link_T, cov_node[self.j]]])
+
+        # Build the joint scale matrix for each link's node pair
+        S_link = jnp.linalg.cholesky(cov_link)
+        Se = jnp.inner(e, S_link)
+
+        # Sample each link pair
+        mu_anchored = self.prepend_anchor(mu)
+        xi = mu_anchored[p.i] + Se[..., :3]
+        xj = mu_anchored[p.j] + Se[..., 3:]
+        logpdf = link_logpdf(xi, xj, self.y, self.scale).sum(-1).mean(0)
+        entropy = logdiag.sum()
+        return logpdf + entropy
 
 
 def load_json(file):
@@ -180,9 +215,8 @@ if __name__ == '__main__':
     link_specs, node_data, odo_pose, tbx_pose = load_json(args.posegraph_file)
 
     # Create problem structure
-    p = DenseProblem.from_link_specs(link_specs, odo_pose[0])
-    Nsamp = 400
-    key = jax.random.PRNGKey(0)
+    p = LinkwiseDenseProblem.from_link_specs(link_specs, odo_pose[0])
+    Nsamp = 2**12
 
     # Create initial guess
     logdiag0 = jnp.tile(np.log([0.2, 0.2, 0.025]), p.N)
@@ -208,18 +242,19 @@ if __name__ == '__main__':
 
     # Initialize stochastic optimization
     mincost = np.inf
+    seed = 0
     last_save_time = 0
-    sched = lambda i: 1e-4 / (1 + i * 1e-6)
+    sched = lambda i: 2e-4 / (1 + i * 1e-4)
     optimizer = optax.sgd(sched)
     opt_state = optimizer.init(dec)
+    sampler = stats.qmc.MultivariateNormalQMC(np.zeros(6), seed=seed)
     
     if not args.stoch:
         raise SystemExit
 
     # Perform optimization
     for i in range(100_000_000):
-        key, subkey = jax.random.split(key)
-        e = jax.random.normal(key, (Nsamp, p.N * 3))
+        e = jnp.asarray(sampler.random(Nsamp))
 
         cost_i = -p.elbo(*dec, e)
         grad_i = [-v for v in p.elbo_grad(*dec, e)]
