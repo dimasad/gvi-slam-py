@@ -244,8 +244,8 @@ if __name__ == '__main__':
     mincost = np.inf
     seed = 0
     last_save_time = 0
-    sched = lambda i: 2e-4 / (1 + i * 1e-4)
-    optimizer = optax.sgd(sched)
+    sched = lambda i: 1e-3 / (1 + i * 1e-4)
+    optimizer = optax.adabelief(sched)
     opt_state = optimizer.init(dec)
     sampler = stats.qmc.MultivariateNormalQMC(np.zeros(6), seed=seed)
     
@@ -254,13 +254,15 @@ if __name__ == '__main__':
 
     # Perform optimization
     for i in range(100_000_000):
+        # Sample random population
         e = jnp.asarray(sampler.random(Nsamp))
 
+        # Calculate cost and gradient
         cost_i = -p.elbo(*dec, e)
         grad_i = [-v for v in p.elbo_grad(*dec, e)]
         mincost = min(mincost, cost_i)
 
-        fooc = max(jnp.abs(v).max() for v in grad_i)
+        fooc = sum(jnp.sum(v**2) for v in grad_i) ** 0.5
         print(
             f'{i=}', f'cost={cost_i:1.3e}', f'mincost={mincost:1.3e}',
             f'{fooc=:1.2e}',
@@ -269,8 +271,14 @@ if __name__ == '__main__':
 
         if any(jnp.any(~jnp.isfinite(v)) for v in grad_i):
             break
-        
-        updates, opt_state = optimizer.update(grad_i, opt_state)
+
+        # Compute and apply preconditioner
+        S = dec[1]
+        sigma = jnp.sqrt(jnp.sum(S ** 2, axis=1)).reshape(p.N, 3)
+        prec_mu_b = S @ (S.T @ grad_i[0].flatten())
+        prec_grad_i = [prec_mu_b.reshape(p.N, 3), grad_i[1]]
+
+        updates, opt_state = optimizer.update(prec_grad_i, opt_state)
         dec = optax.apply_updates(dec, updates)
 
         curr_time = time.time()
