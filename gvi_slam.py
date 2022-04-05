@@ -187,7 +187,7 @@ if __name__ == '__main__':
     # Create initial guess
     logdiag0 = jnp.tile(np.log([0.2, 0.2, 0.025]), p.N)
     Sld0 = jnp.diag(logdiag0)
-    dec = [odo_pose[1:], Sld0]
+    dec = [p.link_odo[1:], Sld0]
 
     # Perform MAP estimation, if requested
     if args.map:
@@ -209,8 +209,8 @@ if __name__ == '__main__':
     # Initialize stochastic optimization
     mincost = np.inf
     last_save_time = 0
-    sched = lambda i: 1e-3 / (1 + i * 1e-4)
-    optimizer = optax.adabelief(sched)
+    sched = lambda i: 1e-4 / (1 + i * 1e-6)
+    optimizer = optax.sgd(sched)
     opt_state = optimizer.init(dec)
     
     if not args.stoch:
@@ -238,7 +238,8 @@ if __name__ == '__main__':
         updates, opt_state = optimizer.update(grad_i, opt_state)
         dec = optax.apply_updates(dec, updates)
 
-        if time.time() - last_save_time > 10:
+        curr_time = time.time()
+        if curr_time - last_save_time > 10:
             np.savez('gvi_progress.npz', mu=dec[0], Sld=dec[1])
-            last_save_time = time.time()
+            last_save_time = curr_time
             print("progress saved")
