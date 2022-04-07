@@ -242,9 +242,10 @@ if __name__ == '__main__':
 
     # Initialize stochastic optimization
     mincost = np.inf
-    seed = 0
+    S_scale = 0.25
+    seed = 1
     last_save_time = 0
-    sched = lambda i: 1e-3 / (1 + i * 1e-4)
+    sched = lambda i: 2e-2 / (1 + i * 5e-3)
     optimizer = optax.adabelief(sched)
     opt_state = optimizer.init(dec)
     sampler = stats.qmc.MultivariateNormalQMC(np.zeros(6), seed=seed)
@@ -272,13 +273,15 @@ if __name__ == '__main__':
         if any(jnp.any(~jnp.isfinite(v)) for v in grad_i):
             break
 
-        # Compute and apply preconditioner
+        # Compute and apply scaling (preconditioner)
         S = dec[1]
-        sigma = jnp.sqrt(jnp.sum(S ** 2, axis=1)).reshape(p.N, 3)
-        prec_mu_b = S @ (S.T @ grad_i[0].flatten())
-        prec_grad_i = [prec_mu_b.reshape(p.N, 3), grad_i[1]]
+        #sigma = jnp.sqrt(jnp.sum(S ** 2, axis=1)).reshape(p.N, 3)
+        scaled_mu_b = (S.T @ grad_i[0].flatten()).reshape(p.N, 3)
+        scaled_grad_i = [scaled_mu_b, S_scale * grad_i[1]]
 
-        updates, opt_state = optimizer.update(prec_grad_i, opt_state)
+        scaled_updates, opt_state = optimizer.update(scaled_grad_i, opt_state)
+        scaled_mu_update = (S @ scaled_updates[0].flatten()).reshape(p.N, 3)
+        updates = [scaled_mu_update, S_scale * scaled_updates[1]]
         dec = optax.apply_updates(dec, updates)
 
         curr_time = time.time()
