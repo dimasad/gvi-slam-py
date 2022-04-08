@@ -242,7 +242,7 @@ if __name__ == '__main__':
 
     # Initialize stochastic optimization
     mincost = np.inf
-    S_scale = 0.25
+    Sld_scale = 0.25
     seed = 1
     last_save_time = 0
     sched = lambda i: 2e-2 / (1 + i * 5e-3)
@@ -277,11 +277,15 @@ if __name__ == '__main__':
         S = dec[1]
         #sigma = jnp.sqrt(jnp.sum(S ** 2, axis=1)).reshape(p.N, 3)
         scaled_mu_b = (S.T @ grad_i[0].flatten()).reshape(p.N, 3)
-        scaled_grad_i = [scaled_mu_b, S_scale * grad_i[1]]
+        #scaled_Sld_b = S.T @ jnp.tril(grad_i[1], -1) + jnp.diag(grad_i[1].diagonal())
+        scaled_Sld_b = Sld_scale * grad_i[1]
+        scaled_grad_i = [scaled_mu_b, scaled_Sld_b]
 
-        scaled_updates, opt_state = optimizer.update(scaled_grad_i, opt_state)
-        scaled_mu_update = (S @ scaled_updates[0].flatten()).reshape(p.N, 3)
-        updates = [scaled_mu_update, S_scale * scaled_updates[1]]
+        scaled_upd, opt_state = optimizer.update(scaled_grad_i, opt_state)
+        mu_upd = (S @ scaled_upd[0].flatten()).reshape(p.N, 3)
+        #Sld_upd = S @ jnp.tril(scaled_upd[1], -1) + jnp.diag(scaled_upd[1].diagonal())
+        Sld_upd = Sld_scale * scaled_upd[1]
+        updates = [mu_upd, Sld_upd]
         dec = optax.apply_updates(dec, updates)
 
         curr_time = time.time()
