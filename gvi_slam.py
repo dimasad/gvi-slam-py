@@ -216,7 +216,7 @@ if __name__ == '__main__':
 
     # Create problem structure
     p = LinkwiseDenseProblem.from_link_specs(link_specs, odo_pose[0])
-    Nsamp = 2**12
+    Nsamp = 2**10
 
     # Create initial guess
     logdiag0 = jnp.tile(np.log([0.2, 0.2, 0.025]), p.N)
@@ -256,7 +256,12 @@ if __name__ == '__main__':
     # Perform optimization
     for i in range(100_000_000):
         # Sample random population
-        e = jnp.asarray(sampler.random(Nsamp))
+        try:
+            e = jnp.asarray(sampler.random(Nsamp))
+        except OverflowError:
+            seed += 1
+            sampler = stats.qmc.MultivariateNormalQMC(np.zeros(6), seed=seed)
+            e = jnp.asarray(sampler.random(Nsamp))
 
         # Calculate cost and gradient
         cost_i = -p.elbo(*dec, e)
