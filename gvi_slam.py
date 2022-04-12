@@ -42,6 +42,10 @@ def link_logpdf(xi, xj, y, scale):
 
 
 class Problem:
+
+    scale_multipler = jnp.array([[4.0], [4.0], [1.0]])
+    """Tuning multiplier for link scale."""
+
     def __init__(self, i, j, y, cov, x0=None):
         self.i = jnp.asarray(i, int)
         """Graph link sources."""
@@ -70,7 +74,8 @@ class Problem:
         assert self.cov.shape == (self.M, 3, 3)
 
         info = jnp.linalg.inv(self.cov)
-        self.scale = jnp.linalg.cholesky(info).swapaxes(1, 2)
+        base_scale = jnp.linalg.cholesky(info).swapaxes(1, 2)
+        self.scale = self.scale_multipler * base_scale
         """Link residual scaling matrix."""
 
     @classmethod
@@ -216,7 +221,7 @@ if __name__ == '__main__':
 
     # Create problem structure
     p = LinkwiseDenseProblem.from_link_specs(link_specs, odo_pose[0])
-    Nsamp = 2**10
+    Nsamp = 2**13
 
     # Create initial guess
     logdiag0 = jnp.tile(np.log([0.2, 0.2, 0.025]), p.N)
@@ -245,7 +250,7 @@ if __name__ == '__main__':
     #Sld_scale = 0.25
     seed = 1
     last_save_time = 0
-    sched = lambda i: 5e-3 / (1 + i * 1e-5)
+    sched = lambda i: 2e-3 / (1 + i * 1e-3)
     optimizer = optax.adam(sched)
     opt_state = optimizer.init(dec)
     sampler = stats.qmc.MultivariateNormalQMC(np.zeros(6), seed=seed)
@@ -259,8 +264,7 @@ if __name__ == '__main__':
         try:
             e = jnp.asarray(sampler.random(Nsamp))
         except OverflowError:
-            seed += 1
-            sampler = stats.qmc.MultivariateNormalQMC(np.zeros(6), seed=seed)
+            sampler.reset()
             e = jnp.asarray(sampler.random(Nsamp))
 
         # Calculate cost and gradient
@@ -268,10 +272,10 @@ if __name__ == '__main__':
         grad_i = [-v for v in p.elbo_grad(*dec, e)]
         mincost = min(mincost, cost_i)
 
-        fooc = sum(jnp.sum(v**2) for v in grad_i) ** 0.5
+        fooc = [jnp.sum(v**2) ** 0.5 for v in grad_i]
         print(
-            f'{i=}', f'cost={cost_i:1.3e}', f'mincost={mincost:1.3e}',
-            f'{fooc=:1.2e}',
+            f'{i=}', f'cost={cost_i:1.5e}', f'mincost={mincost:1.5e}',
+            f'{fooc[0]=:1.2e}', f'{fooc[1]=:1.2e}',
             sep='\t'
         )
 
