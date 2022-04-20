@@ -17,7 +17,7 @@ from scipy import optimize, stats
 
 import utils
 
-@jax.jit
+
 @utils.jax_vectorize(signature='()->(2,2)')
 def rotation_matrix_2d(angle):
     cos = jnp.cos(angle)
@@ -29,6 +29,12 @@ def normalize_angle(ang):
     return (ang + jnp.pi) % (2 * jnp.pi) - jnp.pi
 
 
+def std_multivariate_t(x, df):
+    sqerrsum = jnp.sum(x ** 2, -1)
+    n = jnp.shape(x)[-1]
+    return -0.5 * (df + n) * jnp.log(1 + sqerrsum / df)
+
+
 @utils.jax_vectorize(signature='(3),(3),(3),(3,3)->()')
 def link_logpdf(xi, xj, y, scale):
     inv_rot_i = rotation_matrix_2d(xi[2]).T
@@ -36,14 +42,12 @@ def link_logpdf(xi, xj, y, scale):
     angerr = normalize_angle(xj[2:] - xi[2:] - y[2:])
 
     errscaled = scale @ jnp.concatenate((poserr, angerr), -1)
-    pos_logpdf = jsp.stats.t.logpdf(errscaled[:2], 4, scale=1.0).sum()
-    ang_logpdf = jsp.stats.t.logpdf(errscaled[2], 4, scale=1.0)
-    return pos_logpdf + ang_logpdf
+    return std_multivariate_t(errscaled, df=4)
 
 
 class Problem:
 
-    scale_multipler = jnp.array([[4.0], [4.0], [1.0]])
+    scale_multipler = 5.0
     """Tuning multiplier for link scale."""
 
     def __init__(self, i, j, y, cov, x0=None):
@@ -96,13 +100,18 @@ class Problem:
 
     @property
     def link_odo(self):
-        link_map = {(int(self.i[k]), int(self.j[k])): k for k in range(self.M)}
+        rotm2d = jax.jit(rotation_matrix_2d, backend='cpu')
+        self_i = self.i.to_py()
+        self_j = self.j.to_py()
+        self_y = self.y.to_py()
+
+        link_map = {(int(self_i[k]), int(self_j[k])): k for k in range(self.M)}
         poses = np.tile(self.x0, (self.N+1, 1))
         for i in range(self.N):
             j = i+1
             k = link_map[i, j]
-            y = self.y[k]
-            rot_i = rotation_matrix_2d(poses[i, 2])
+            y = self_y[k]
+            rot_i = rotm2d(poses[i, 2])
             poses[j, :2] = poses[i, :2] + rot_i @ y[:2]
             poses[j, 2] = poses[i, 2] + y[2]
         return poses
@@ -202,6 +211,21 @@ def load_json(file):
     return link_specs, node_data, odo_pose, tbx_pose
 
 
+def export_poses(filename, poses):
+    n = len(poses)
+    i = np.arange(n)
+    data = np.c_[i, poses]
+    np.savetxt(filename, data)
+
+
+def search_then_converge(eta0, tau, c):
+    def sched(i):
+        num = 1 + c / eta0 * i / tau
+        den = num  + i * i / tau
+        return eta0 * num / den
+    return sched
+
+
 if __name__ == '__main__':
     # Define and parse command-line arguments
     parser = argparse.ArgumentParser(description=__doc__)
@@ -250,10 +274,10 @@ if __name__ == '__main__':
     #Sld_scale = 0.25
     seed = 1
     last_save_time = 0
-    sched = lambda i: 2e-3 / (1 + i * 1e-3)
+    sched = search_then_converge(1e-2, tau=500, c=2)
     optimizer = optax.adam(sched)
     opt_state = optimizer.init(dec)
-    sampler = stats.qmc.MultivariateNormalQMC(np.zeros(6), seed=seed)
+    np.random.seed(seed)
     
     if not args.stoch:
         raise SystemExit
@@ -261,11 +285,8 @@ if __name__ == '__main__':
     # Perform optimization
     for i in range(100_000_000):
         # Sample random population
-        try:
-            e = jnp.asarray(sampler.random(Nsamp))
-        except OverflowError:
-            sampler.reset()
-            e = jnp.asarray(sampler.random(Nsamp))
+        sampler = stats.qmc.MultivariateNormalQMC(np.zeros(6))
+        e = jnp.asarray(sampler.random(Nsamp))
 
         # Calculate cost and gradient
         cost_i = -p.elbo(*dec, e)
@@ -275,7 +296,7 @@ if __name__ == '__main__':
         fooc = [jnp.sum(v**2) ** 0.5 for v in grad_i]
         print(
             f'{i=}', f'cost={cost_i:1.5e}', f'mincost={mincost:1.5e}',
-            f'{fooc[0]=:1.2e}', f'{fooc[1]=:1.2e}',
+            f'{fooc[0]=:1.2e}', f'{fooc[1]=:1.2e}', f'{sched(i)=:1.1e}',
             sep='\t'
         )
 
@@ -297,6 +318,7 @@ if __name__ == '__main__':
         #updates = [mu_upd, Sld_upd]
 
         updates, opt_state = optimizer.update(grad_i, opt_state)
+        updates[0] = 10 * updates[0]
         dec = optax.apply_updates(dec, updates)
 
         curr_time = time.time()
