@@ -220,6 +220,7 @@ def export_poses(filename, poses):
 
 def search_then_converge(eta0, tau, c):
     def sched(i):
+        i = int(i)
         num = 1 + c / eta0 * i / tau
         den = num  + i * i / tau
         return eta0 * num / den
@@ -274,8 +275,8 @@ if __name__ == '__main__':
     #Sld_scale = 0.25
     seed = 1
     last_save_time = 0
-    sched = search_then_converge(1e-2, tau=500, c=2)
-    optimizer = optax.adam(sched)
+    sched = search_then_converge(2e-2, tau=500, c=5)
+    optimizer = optax.adabelief(sched)
     opt_state = optimizer.init(dec)
     np.random.seed(seed)
     
