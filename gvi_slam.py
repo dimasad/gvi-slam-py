@@ -120,7 +120,6 @@ class Problem:
     def prepend_anchor(self, x):
         return jnp.r_[self.x0[None], x]
 
-    @utils.jax_jit_method
     def logpdf(self, x):
         x_anchored = self.prepend_anchor(x)
         xi = x_anchored[..., self.i, :]
@@ -130,7 +129,7 @@ class Problem:
     @property
     @functools.cache
     def logpdf_grad(self):
-        return jax.jit(jax.grad(self.logpdf))
+        return jax.grad(self.logpdf)
 
     @property
     @functools.cache
@@ -149,7 +148,7 @@ class DenseProblem(Problem):
     @property
     @functools.cache
     def elbo_grad(self):
-        return jax.jit(jax.grad(self.elbo, (0, 1)))
+        return jax.grad(self.elbo, (0, 1))
 
     @utils.jax_jit_method
     def elbo_hvp(self, mu, Sld, mu_d, Sld_d, *args):
@@ -159,7 +158,6 @@ class DenseProblem(Problem):
 
 
 class GlobalDenseProblem(DenseProblem):
-    @utils.jax_jit_method
     def elbo(self, mu, Sld, e):
         logdiag, S = self.assemble_S(Sld)
         Se = jnp.inner(e, S).reshape(-1, self.N, 3)
@@ -170,7 +168,6 @@ class GlobalDenseProblem(DenseProblem):
 
 
 class LinkwiseDenseProblem(DenseProblem):
-    @utils.jax_jit_method
     def elbo(self, mu, Sld, e):
         # Assemble the scale matrix
         logdiag, S = self.assemble_S(Sld)
@@ -246,6 +243,8 @@ if __name__ == '__main__':
 
     # Create problem structure
     p = LinkwiseDenseProblem.from_link_specs(link_specs, odo_pose[0])
+    p.elbo = jax.jit(p.elbo)
+    elbo_grad = jax.jit(p.elbo_grad)
     Nsamp = 2**13
 
     # Create initial guess
@@ -291,7 +290,7 @@ if __name__ == '__main__':
 
         # Calculate cost and gradient
         cost_i = -p.elbo(*dec, e)
-        grad_i = [-v for v in p.elbo_grad(*dec, e)]
+        grad_i = [-v for v in elbo_grad(*dec, e)]
         mincost = min(mincost, cost_i)
 
         fooc = [jnp.sum(v**2) ** 0.5 for v in grad_i]

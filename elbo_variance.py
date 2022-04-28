@@ -42,6 +42,10 @@ if __name__ == '__main__':
     pg = gvi_slam.GlobalDenseProblem.from_link_specs(link_specs, odo_pose[0])
     pl = gvi_slam.LinkwiseDenseProblem.from_link_specs(link_specs, odo_pose[0])
 
+    # Optimize function implementation
+    pg.elbo = jax.jit(pg.elbo)
+    pl.elbo = jax.jit(pl.elbo)
+    
     # Initialize experiment and parameters
     np.random.seed(0)
     key = jax.random.PRNGKey(0)
