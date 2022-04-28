@@ -195,8 +195,8 @@ class LinkwiseDenseProblem(DenseProblem):
 
         # Sample each link pair
         mu_anchored = self.prepend_anchor(mu)
-        xi = mu_anchored[p.i] + Se[..., :3]
-        xj = mu_anchored[p.j] + Se[..., 3:]
+        xi = mu_anchored[self.i] + Se[..., :3]
+        xj = mu_anchored[self.j] + Se[..., 3:]
         logpdf = link_logpdf(xi, xj, self.y, self.scale).sum(-1).mean(0)
         entropy = logdiag.sum()
         return logpdf + entropy
@@ -274,7 +274,7 @@ if __name__ == '__main__':
     mincost = np.inf
     #Sld_scale = 0.25
     seed = 1
-    last_save_time = 0
+    last_save_time = -np.inf
     sched = search_then_converge(2e-2, tau=500, c=5)
     optimizer = optax.adabelief(sched)
     opt_state = optimizer.init(dec)

@@ -1,3 +1,12 @@
+# Folder for some scratch plotting, testing and analysis scripts
+scratch/
+
+# IDE configuration
+.vscode
+
+# Saved data files
+*.npz
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
