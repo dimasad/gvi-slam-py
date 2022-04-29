@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
  
-"""Evaluation of ELBO variance and error."""
+"""Profiling of GVI SLAM over CPU and GPU."""
 
 import argparse
 import functools
@@ -52,7 +52,7 @@ if __name__ == '__main__':
     # Initialize experiment and parameters
     np.random.seed(0)
     key = jax.random.PRNGKey(0)
-    log2_n_max = 14
+    log2_n_max = 16
 
     # Print output file header
     print('n', 'gcpu', 'ggpu', 'lcpu', 'lgpu', file=args.output)
@@ -76,7 +76,7 @@ if __name__ == '__main__':
         def profile(stmt):
             num = 10
             t = timeit.repeat(stmt, globals=globals(), number=num, repeat=10)
-            return np.median(t) / num
+            return np.min(t) / num
 
         t_gcpu = profile('g_cpu(*dec_cpu, eg_cpu)[0].block_until_ready()')
         t_lcpu = profile('l_cpu(*dec_cpu, el_cpu)[0].block_until_ready()')
