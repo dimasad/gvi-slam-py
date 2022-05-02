@@ -29,7 +29,7 @@ def normalize_angle(ang):
     return (ang + jnp.pi) % (2 * jnp.pi) - jnp.pi
 
 
-def std_multivariate_t(x, df):
+def multivariate_t(x, df):
     sqerrsum = jnp.sum(x ** 2, -1)
     n = jnp.shape(x)[-1]
     return -0.5 * (df + n) * jnp.log(1 + sqerrsum / df)
@@ -42,15 +42,17 @@ def link_logpdf(xi, xj, y, scale):
     angerr = normalize_angle(xj[2:] - xi[2:] - y[2:])
 
     errscaled = scale @ jnp.concatenate((poserr, angerr), -1)
-    return std_multivariate_t(errscaled, df=4)
+    return multivariate_t(errscaled, df=4)
 
 
 class Problem:
 
-    scale_multipler = 5.0
+    scale_multiplier = 5.0
     """Tuning multiplier for link scale."""
 
-    def __init__(self, i, j, y, cov, x0=None):
+    scaled_residual_logpdf = functools.partial(multivariate_t, df=4)
+
+    def __init__(self, i, j, y, cov, x0, scale_multiplier=None):
         self.i = jnp.asarray(i, int)
         """Graph link sources."""
 
@@ -77,26 +79,31 @@ class Problem:
         assert self.y.shape == (self.M, 3)
         assert self.cov.shape == (self.M, 3, 3)
 
+        if scale_multiplier is not None:
+            self.scale_multiplier = scale_multiplier
+
         info = jnp.linalg.inv(self.cov)
         base_scale = jnp.linalg.cholesky(info).swapaxes(1, 2)
-        self.scale = self.scale_multipler * base_scale
+        self.scale = self.scale_multiplier * base_scale
         """Link residual scaling matrix."""
 
-    @classmethod
-    def from_link_specs(cls, specs, x0):
-        M = len(specs)
-        i = np.zeros(M, int)
-        j = np.zeros(M, int)
-        y = np.zeros((M, 3), float)
-        cov = np.zeros((M, 3, 3), float)
+    def save(self, filename, mu, Sld):
+        data = dict(
+            mu=mu, Sld=Sld,
+            i=self.i, j=self.j, y=self.y, cov=self.cov, x0=self.x0,
+            scale_multiplier=self.scale_multiplier
+        )
+        np.savez(filename, **data)
 
-        for k, spec in enumerate(specs):
-            i[k] = spec['source']
-            j[k] = spec['target']
-            y[k] = spec['pose_difference']
-            cov[k] = spec['covariance']
-        
-        return cls(i, j, y, cov, x0)
+    @classmethod
+    def load(cls, file):
+        data = np.load(file)
+        dec = jnp.array(data['mu']), jnp.array(data['Sld'])
+        obj = cls(
+            data['i'], data['j'], data['y'], data['cov'], data['x0'], 
+            data['scale_multiplier']
+        )
+        return obj, dec
 
     @property
     def link_odo(self):
@@ -120,11 +127,25 @@ class Problem:
     def prepend_anchor(self, x):
         return jnp.r_[self.x0[None], x]
 
-    def logpdf(self, x):
+    @utils.jax_vectorize_method(signature='(3),(3),(3)->(3)')
+    def residuals(self, xi, xj, y):
+        """Residuals associated to an observation"""
+        inv_rot_i = rotation_matrix_2d(xi[2]).T
+        pos_res = inv_rot_i @ (xj[:2] - xi[:2]) - y[:2]
+        ang_res = normalize_angle(xj[2:] - xi[2:] - y[2:])
+        return jnp.concatenate((pos_res, ang_res), -1)
+
+    def path_residuals(self, x):
+        """Residuals associated to an entire path"""
         x_anchored = self.prepend_anchor(x)
         xi = x_anchored[..., self.i, :]
         xj = x_anchored[..., self.j, :]
-        return link_logpdf(xi, xj, self.y, self.scale).sum(-1)
+        return self.residuals(xi, xj, self.y)
+
+    def logpdf(self, x):
+        r = self.path_residuals(x)
+        scaled_r = (self.scale @ r[..., None])[..., 0]
+        return self.scaled_residual_logpdf(scaled_r).sum(-1)
     
     @property
     @functools.cache
@@ -134,9 +155,12 @@ class Problem:
     @property
     @functools.cache
     def logpdf_hvp(self):
-        hvp = lambda x, x_d: jax.jvp(self.logpdf_grad, (x,), (x_d,))[1]
-        return jax.jit(hvp)
+        return lambda x, x_d: jax.jvp(self.logpdf_grad, (x,), (x_d,))[1]
 
+    @property
+    @functools.cache
+    def logpdf_hess(self):
+        return jax.jacobian(self.logpdf_grad)
 
 class DenseProblem(Problem):
     @staticmethod
@@ -208,6 +232,22 @@ def load_json(file):
     return link_specs, node_data, odo_pose, tbx_pose
 
 
+def problem_arrays(link_specs):
+    M = len(link_specs)
+    i = np.zeros(M, int)
+    j = np.zeros(M, int)
+    y = np.zeros((M, 3), float)
+    cov = np.zeros((M, 3, 3), float)
+
+    for k, spec in enumerate(link_specs):
+        i[k] = spec['source']
+        j[k] = spec['target']
+        y[k] = spec['pose_difference']
+        cov[k] = spec['covariance']
+    
+    return i, j, y, cov
+
+
 def export_poses(filename, poses):
     n = len(poses)
     i = np.arange(n)
@@ -240,9 +280,10 @@ if __name__ == '__main__':
 
     # Parse JSON problem data
     link_specs, node_data, odo_pose, tbx_pose = load_json(args.posegraph_file)
+    i, j, y, cov = problem_arrays(link_specs)
 
     # Create problem structure
-    p = LinkwiseDenseProblem.from_link_specs(link_specs, odo_pose[0])
+    p = LinkwiseDenseProblem(i, j, y, cov, odo_pose[0])
     p.elbo = jax.jit(p.elbo)
     elbo_grad = jax.jit(p.elbo_grad)
     Nsamp = 2**13
@@ -323,6 +364,6 @@ if __name__ == '__main__':
 
         curr_time = time.time()
         if curr_time - last_save_time > 10:
-            np.savez('gvi_progress.npz', mu=dec[0], Sld=dec[1])
+            p.save('gvi_progress.npz', *dec)
             last_save_time = curr_time
             print("progress saved")

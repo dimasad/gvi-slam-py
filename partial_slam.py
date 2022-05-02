@@ -41,9 +41,10 @@ if __name__ == '__main__':
     # Trim graph
     inrange = lambda s: s['source'] < args.cutoff > s['target']
     link_specs = list(filter(inrange, link_specs))
+    i, j, y, cov = gvi_slam.problem_arrays(link_specs)
 
     # Create problem structure
-    p = gvi_slam.LinkwiseDenseProblem.from_link_specs(link_specs, odo_pose[0])
+    p = gvi_slam.LinkwiseDenseProblem(i, j, y, cov, odo_pose[0])
     p.elbo = jax.jit(p.elbo)
     elbo_grad = jax.jit(p.elbo_grad)
     Nsamp = 2**13
