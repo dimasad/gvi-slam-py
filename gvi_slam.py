@@ -35,24 +35,16 @@ def multivariate_t(x, df):
     return -0.5 * (df + n) * jnp.log(1 + sqerrsum / df)
 
 
-@utils.jax_vectorize(signature='(3),(3),(3),(3,3)->()')
-def link_logpdf(xi, xj, y, scale):
-    inv_rot_i = rotation_matrix_2d(xi[2]).T
-    poserr = inv_rot_i @ (xj[:2] - xi[:2]) - y[:2]
-    angerr = normalize_angle(xj[2:] - xi[2:] - y[2:])
-
-    errscaled = scale @ jnp.concatenate((poserr, angerr), -1)
-    return multivariate_t(errscaled, df=4)
-
-
 class Problem:
 
-    scale_multiplier = 5.0
+    scale_multiplier = 10.0
     """Tuning multiplier for link scale."""
 
-    scaled_residual_logpdf = functools.partial(multivariate_t, df=4)
+    degf = 2.0
+    """t-distribution degrees of freedom parameter."""
 
-    def __init__(self, i, j, y, cov, x0, scale_multiplier=None):
+    def __init__(self, i, j, y, cov, x0, 
+                 scale_multiplier=None, degf=None, jit='gpu'):
         self.i = jnp.asarray(i, int)
         """Graph link sources."""
 
@@ -74,13 +66,19 @@ class Problem:
         self.x0 = jnp.asarray(x0)
         """Known pose of first node (anchor)."""
 
+        self.jit = jit
+        """Type of JIT optimization to use."""
+
+        if scale_multiplier is not None:
+            self.scale_multiplier = scale_multiplier
+
+        if degf is not None:
+            self.degf = degf
+
         assert self.i.shape == (self.M,)
         assert self.j.shape == (self.M,)
         assert self.y.shape == (self.M, 3)
         assert self.cov.shape == (self.M, 3, 3)
-
-        if scale_multiplier is not None:
-            self.scale_multiplier = scale_multiplier
 
         info = jnp.linalg.inv(self.cov)
         base_scale = jnp.linalg.cholesky(info).swapaxes(1, 2)
@@ -91,7 +89,7 @@ class Problem:
         data = dict(
             mu=mu, Sld=Sld,
             i=self.i, j=self.j, y=self.y, cov=self.cov, x0=self.x0,
-            scale_multiplier=self.scale_multiplier
+            scale_multiplier=self.scale_multiplier, degf=self.degf,
         )
         np.savez(filename, **data)
 
@@ -101,7 +99,7 @@ class Problem:
         dec = jnp.array(data['mu']), jnp.array(data['Sld'])
         obj = cls(
             data['i'], data['j'], data['y'], data['cov'], data['x0'], 
-            data['scale_multiplier']
+            data['scale_multiplier'], data['degf']
         )
         return obj, dec
 
@@ -142,25 +140,36 @@ class Problem:
         xj = x_anchored[..., self.j, :]
         return self.residuals(xi, xj, self.y)
 
-    def logpdf(self, x):
+    def _logpdf(self, x):
         r = self.path_residuals(x)
         scaled_r = (self.scale @ r[..., None])[..., 0]
-        return self.scaled_residual_logpdf(scaled_r).sum(-1)
+        return multivariate_t(scaled_r, df=self.degf).sum(-1)
     
+    @functools.cached_property
+    def logpdf(self):
+        if self.jit:
+            return jax.jit(self._logpdf, backend=self.jit)
+        else:
+            return self._logpdf
+
     @property
     @functools.cache
     def logpdf_grad(self):
-        return jax.grad(self.logpdf)
+        grad = jax.grad(self.logpdf)
+        return jax.jit(grad, backend=self.jit) if self.jit else grad
 
     @property
     @functools.cache
     def logpdf_hvp(self):
-        return lambda x, x_d: jax.jvp(self.logpdf_grad, (x,), (x_d,))[1]
+        hvp = lambda x, x_d: jax.jvp(self.logpdf_grad, (x,), (x_d,))[1]
+        return jax.jit(hvp, backend=self.jit) if self.jit else hvp
 
     @property
     @functools.cache
     def logpdf_hess(self):
-        return jax.jacobian(self.logpdf_grad)
+        hess = jax.jacobian(self.logpdf_grad)
+        return jax.jit(hess, backend=self.jit) if self.jit else hess
+
 
 class DenseProblem(Problem):
     @staticmethod
@@ -180,19 +189,31 @@ class DenseProblem(Problem):
         tangents = mu_d, Sld_d, *[jnp.zeros_like(a) for a in args]
         return jax.jvp(self.elbo_grad, primals, tangents)[1]
 
+    @property
+    def avg_logpdf_grad(self):
+        return jax.grad(self.avg_logpdf)
 
-class GlobalDenseProblem(DenseProblem):
+    @property
+    def avg_logpdf_hess(self):
+        hess = jax.jacfwd(self.avg_logpdf_grad)
+        return jax.jit(hess, backend=self.jit) if self.jit else hess
+
     def elbo(self, mu, Sld, e):
-        logdiag, S = self.assemble_S(Sld)
-        Se = jnp.inner(e, S).reshape(-1, self.N, 3)
-        x = mu + Se
-        logpdf = self.logpdf(x).mean(0)
-        entropy = logdiag.sum()
+        logpdf = self.avg_logpdf(mu, Sld, e)
+        entropy = Sld.diagonal().sum()
         return logpdf + entropy
 
 
+class GlobalDenseProblem(DenseProblem):
+    def avg_logpdf(self, mu, Sld, e):
+        logdiag, S = self.assemble_S(Sld)
+        Se = jnp.inner(e, S).reshape(-1, self.N, 3)
+        x = mu + Se
+        return self.logpdf(x).mean(0)
+
+
 class LinkwiseDenseProblem(DenseProblem):
-    def elbo(self, mu, Sld, e):
+    def avg_logpdf(self, mu, Sld, e):
         # Assemble the scale matrix
         logdiag, S = self.assemble_S(Sld)
 
@@ -218,9 +239,9 @@ class LinkwiseDenseProblem(DenseProblem):
         mu_anchored = self.prepend_anchor(mu)
         xi = mu_anchored[self.i] + Se[..., :3]
         xj = mu_anchored[self.j] + Se[..., 3:]
-        logpdf = link_logpdf(xi, xj, self.y, self.scale).sum(-1).mean(0)
-        entropy = logdiag.sum()
-        return logpdf + entropy
+        r = self.residuals(xi, xj, self.y)
+        scaled_r = (self.scale @ r[..., None])[..., 0]
+        return multivariate_t(scaled_r, df=self.degf).sum(-1).mean(0)
 
 
 def load_json(file):
@@ -288,14 +309,14 @@ if __name__ == '__main__':
     elbo_grad = jax.jit(p.elbo_grad)
     Nsamp = 2**13
 
-    # Create initial guess
-    logdiag0 = jnp.tile(np.log([0.2, 0.2, 0.025]), p.N)
-    Sld0 = jnp.diag(logdiag0)
-    dec = [p.link_odo[1:], Sld0]
+    # Create initial guess for mean
+    mu0 = tbx_pose[1:]
+    #mu0 = odo_pose[1:]
+    #mu0 = p.link_odo[1:]
 
     # Perform MAP estimation, if requested
     if args.map:
-        x0map = dec[0]
+        x0map = mu0.flatten()
         mapur = lambda v: v.reshape(-1, 3)
         mapcost = lambda v: -p.logpdf(mapur(v)).to_py()
         mapgrad = lambda v: -p.logpdf_grad(mapur(v)).flatten()
@@ -309,13 +330,23 @@ if __name__ == '__main__':
             tol=1e-10,
             options={'maxiter': 1500, 'gtol': 1e-10, 'verbose': 2}
         )
+        mu0 = mapur(mapsol.x)
+
+    # Create initial guess of scale
+    logdiag0 = jnp.tile(np.log([0.2, 0.2, 0.025]), p.N)
+    Sld0 = jnp.diag(logdiag0)
+    #H0 = np.array(p.logpdf_hess(mu0).reshape(p.N * 3, p.N * 3), float)
+    #cov0 = np.linalg.inv(-H0)
+    #S0 = np.linalg.cholesky(cov0)
+    #Sld0 = jnp.tril(S0, k=-1) + jnp.diag(jnp.log(S0.diagonal()))
+    dec = [mu0, Sld0]
 
     # Initialize stochastic optimization
     mincost = np.inf
     #Sld_scale = 0.25
     seed = 1
     last_save_time = -np.inf
-    sched = search_then_converge(2e-2, tau=500, c=5)
+    sched = search_then_converge(1e-2, tau=500, c=100)
     optimizer = optax.adabelief(sched)
     opt_state = optimizer.init(dec)
     np.random.seed(seed)

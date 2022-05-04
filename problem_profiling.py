@@ -33,6 +33,7 @@ if __name__ == '__main__':
     link_specs, node_data, odo_pose, tbx_pose = gvi_slam.load_json(
         args.posegraph_file
     )
+    i, j, y, cov = gvi_slam.problem_arrays(link_specs)    
 
     # Load solution
     solution = np.load(args.solution)
@@ -40,8 +41,8 @@ if __name__ == '__main__':
     dec_gpu = [jnp.array(d) for d in dec_cpu]
 
     # Create GVI problem instances
-    pg = gvi_slam.GlobalDenseProblem.from_link_specs(link_specs, odo_pose[0])
-    pl = gvi_slam.LinkwiseDenseProblem.from_link_specs(link_specs, odo_pose[0])
+    pg = gvi_slam.GlobalDenseProblem(i, j, y, cov, odo_pose[0], jit=False)
+    pl = gvi_slam.LinkwiseDenseProblem(i, j, y, cov, odo_pose[0], jit=False)
 
     # Optimize function implementation
     g_cpu = jax.jit(pg.elbo_grad, backend='cpu')

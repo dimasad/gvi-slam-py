@@ -58,7 +58,7 @@ if __name__ == '__main__':
     mincost = np.inf
     seed = 1
     last_save_time = -np.inf
-    sched = gvi_slam.search_then_converge(2e-2, tau=500, c=5)
+    sched = gvi_slam.search_then_converge(1e-2, tau=500, c=100)
     optimizer = optax.adabelief(sched)
     opt_state = optimizer.init(dec)
     np.random.seed(seed)
@@ -107,6 +107,6 @@ if __name__ == '__main__':
 
         curr_time = time.time()
         if curr_time - last_save_time > 10:
-            np.savez('gvi_progress.npz', mu=dec[0], Sld=dec[1])
+            p.save('gvi_progress.npz', *dec)
             last_save_time = curr_time
             print("progress saved")
