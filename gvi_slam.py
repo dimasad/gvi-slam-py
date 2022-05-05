@@ -85,24 +85,6 @@ class Problem:
         self.scale = self.scale_multiplier * base_scale
         """Link residual scaling matrix."""
 
-    def save(self, filename, mu, Sld):
-        data = dict(
-            mu=mu, Sld=Sld,
-            i=self.i, j=self.j, y=self.y, cov=self.cov, x0=self.x0,
-            scale_multiplier=self.scale_multiplier, degf=self.degf,
-        )
-        np.savez(filename, **data)
-
-    @classmethod
-    def load(cls, file):
-        data = np.load(file)
-        dec = jnp.array(data['mu']), jnp.array(data['Sld'])
-        obj = cls(
-            data['i'], data['j'], data['y'], data['cov'], data['x0'], 
-            data['scale_multiplier'], data['degf']
-        )
-        return obj, dec
-
     @property
     def link_odo(self):
         rotm2d = jax.jit(rotation_matrix_2d, backend='cpu')
@@ -170,14 +152,48 @@ class Problem:
         hess = jax.jacobian(self.logpdf_grad)
         return jax.jit(hess, backend=self.jit) if self.jit else hess
 
+    def S_position(self, Sld):
+        """Cholesky factor of marginal position covariances."""
+        logdiag, S = self.assemble_S(Sld)
+        cov = S @ S.T
+        cov_diag = cov.diagonal()
+
+        cov_position = np.empty((self.N, 2, 2))
+        cov_position[:, 0, 0] = cov_diag[::3]
+        cov_position[:, 1, 1] = cov_diag[1::3]
+        cov_position[:, 0, 1] = cov_position[:, 1, 0] = cov.diagonal(1)[::3]
+        return np.linalg.cholesky(cov_position)
+
 
 class DenseProblem(Problem):
+    def save(self, filename, mu, Sld):
+        data = dict(
+            mu=mu, Sld=Sld,
+            i=self.i, j=self.j, y=self.y, cov=self.cov, x0=self.x0,
+            scale_multiplier=self.scale_multiplier, degf=self.degf,
+        )
+        np.savez(filename, **data)
+
+    @classmethod
+    def load(cls, file):
+        data = np.load(file)
+        dec = jnp.array(data['mu']), jnp.array(data['Sld'])
+        obj = cls(
+            data['i'], data['j'], data['y'], data['cov'], data['x0'], 
+            data['scale_multiplier'], data['degf']
+        )
+        return obj, dec
+
     @staticmethod
     def assemble_S(Sld):
         logdiag = Sld.diagonal()
         S = jnp.tril(Sld, -1) + jnp.diag(jnp.exp(logdiag))
         return logdiag, S
 
+    @staticmethod
+    def disassemble_S(S):
+        return jnp.tril(S, k=-1) + jnp.diag(jnp.log(jnp.diagonal(S)))
+    
     @property
     @functools.cache
     def elbo_grad(self):
