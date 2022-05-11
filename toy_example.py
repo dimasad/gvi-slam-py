@@ -4,9 +4,7 @@
 
 import argparse
 import functools
-import json
-import argparse
-import functools
+import importlib
 import json
 import signal
 import time
@@ -31,7 +29,16 @@ if __name__ == '__main__':
     parser.add_argument(
         '--save-map', type=argparse.FileType('w'),  dest='save_map'
     )
+    parser.add_argument(
+        '--stoch', default=True, action=argparse.BooleanOptionalAction,
+        help='Perform GVI estimation with stochastic optimization.',
+    )
+    parser.add_argument('--reload', default=[], nargs='*')
     args = parser.parse_args()
+
+    # Reload modules needed
+    for mod in args.reload:
+        importlib.reload(importlib.import_module(mod))
 
     # Parse JSON problem data
     link_specs, node_data, odo_pose, tbx_pose = gvi_slam.load_json(
@@ -44,15 +51,10 @@ if __name__ == '__main__':
     # Create problem structure
     p = gvi_slam.LinkwiseDenseProblem(i, j, y, cov, odo_pose[0])
     elbo_grad = jax.jit(p.elbo_grad)
-    Nsamp = 2**13
-
-    # Create initial guess
-    logdiag0 = jnp.tile(np.log([0.2, 0.2, 0.025]), p.N)
-    Sld0 = jnp.diag(logdiag0)
-    dec = [p.link_odo[1:], Sld0]
+    Nsamp = 2**16
 
     # Run MAP estimation
-    x0map = dec[0].flatten()
+    x0map = p.link_odo[1:].flatten()
     mapur = lambda v: v.reshape(-1, 3)
     mapcost = lambda v: -p.logpdf(mapur(v)).to_py()
     mapgrad = lambda v: -p.logpdf_grad(mapur(v)).flatten()
@@ -65,6 +67,24 @@ if __name__ == '__main__':
         options={'maxiter': 1500, 'gtol': 1e-10, 'verbose': 2}
     )
 
+    # Run MAP estimation with Gaussian observation model
+    pg = gvi_slam.GaussianProblem(i, j, y, cov, odo_pose[0])
+    mapgcost = lambda v: -pg.logpdf(mapur(v)).to_py()
+    mapggrad = lambda v: -pg.logpdf_grad(mapur(v)).flatten()
+    mapghvp = lambda v, v_d: -pg.logpdf_hvp(mapur(v), mapur(v_d)).flatten()
+    mapgsol = optimize.minimize(
+        mapgcost, x0map, jac=mapggrad,
+        method='trust-constr',
+        hessp=mapghvp,
+        tol=1e-10,
+        options={'maxiter': 1500, 'gtol': 1e-10, 'verbose': 2}
+    )
+    gx = mapur(mapgsol.x)
+    Hg = pg.logpdf_hess(gx).reshape(pg.N*3, pg.N*3)
+    S_glap = np.linalg.cholesky(np.linalg.inv(-Hg))
+    Sld_glap = p.disassemble_S(S_glap)
+    S_gposition = p.S_position(Sld_glap)
+
     # Save updated JSON with MAP estimate
     if args.save_map is not None:
         args.posegraph_file.seek(0)
@@ -73,19 +93,27 @@ if __name__ == '__main__':
         json.dump(obj, args.save_map, indent=2)
         args.save_map.close()
 
-    raise SystemExit
-
+    # Create initial guess
+    mu0 = mapur(mapsol.x)
+    H = p.logpdf_hess(mu0).reshape(p.N*3, p.N*3)
+    S_lap = np.linalg.cholesky(np.linalg.inv(-H))
+    dec = [mu0, S_lap]
+    
+    # Exit if stochastic optimization not needed
+    if not args.stoch:
+        raise SystemExit
+    
     # Initialize stochastic optimization
     mincost = np.inf
     seed = 1
     last_save_time = -np.inf
-    sched = gvi_slam.search_then_converge(1e-2, tau=500, c=100)
-    optimizer = optax.adabelief(sched)
+    sched = gvi_slam.search_then_converge(5e-2, tau=50, c=8)
+    optimizer = optax.adam(sched)
     opt_state = optimizer.init(dec)
     np.random.seed(seed)
     
     # Perform optimization
-    for i in range(100_000_000):
+    for i in range(10_000):
         # Sample random population
         sampler = stats.qmc.MultivariateNormalQMC(np.zeros(6))
         e = jnp.asarray(sampler.random(Nsamp))
@@ -106,7 +134,6 @@ if __name__ == '__main__':
             break
         
         updates, opt_state = optimizer.update(grad_i, opt_state)
-        updates[0] = 10 * updates[0]
         dec = optax.apply_updates(dec, updates)
 
         curr_time = time.time()

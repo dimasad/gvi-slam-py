@@ -152,17 +152,12 @@ class Problem:
         hess = jax.jacobian(self.logpdf_grad)
         return jax.jit(hess, backend=self.jit) if self.jit else hess
 
-    def S_position(self, Sld):
-        """Cholesky factor of marginal position covariances."""
-        logdiag, S = self.assemble_S(Sld)
-        cov = S @ S.T
-        cov_diag = cov.diagonal()
 
-        cov_position = np.empty((self.N, 2, 2))
-        cov_position[:, 0, 0] = cov_diag[::3]
-        cov_position[:, 1, 1] = cov_diag[1::3]
-        cov_position[:, 0, 1] = cov_position[:, 1, 0] = cov.diagonal(1)[::3]
-        return np.linalg.cholesky(cov_position)
+class GaussianProblem(Problem):
+    def _logpdf(self, x):
+        r = self.path_residuals(x)
+        scaled_r = (self.scale @ r[..., None])[..., 0]
+        return -0.5 * jnp.square(scaled_r).sum((-2, -1))
 
 
 class DenseProblem(Problem):
@@ -193,6 +188,18 @@ class DenseProblem(Problem):
     @staticmethod
     def disassemble_S(S):
         return jnp.tril(S, k=-1) + jnp.diag(jnp.log(jnp.diagonal(S)))
+
+    def S_position(self, Sld):
+        """Cholesky factor of marginal position covariances."""
+        logdiag, S = self.assemble_S(Sld)
+        cov = S @ S.T
+        cov_diag = cov.diagonal()
+
+        cov_position = np.empty((self.N, 2, 2))
+        cov_position[:, 0, 0] = cov_diag[::3]
+        cov_position[:, 1, 1] = cov_diag[1::3]
+        cov_position[:, 0, 1] = cov_position[:, 1, 0] = cov.diagonal(1)[::3]
+        return np.linalg.cholesky(cov_position)
     
     @property
     @functools.cache
