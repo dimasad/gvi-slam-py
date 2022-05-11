@@ -50,6 +50,10 @@ if __name__ == '__main__':
         '--laplace', default=True, action=argparse.BooleanOptionalAction,
         help="Plot the uncertainty ellipses given by Laplace's method."
     )
+    parser.add_argument(
+        '--ellipse-skip', default=3, type=int, dest='skip',
+        help="Plot 1 out of every x uncertainty ellipses."
+    )
     args = parser.parse_args()
 
     # Initialize figure
@@ -84,7 +88,7 @@ if __name__ == '__main__':
             Sld_lap = p.disassemble_S(S_lap)
             S_position_lap = p.S_position(Sld_lap)
             unc_lap = 2*np.inner(unit_circle, S_position_lap) + tbx_pose[1:, :2]
-            ax.plot(unc_lap[:, ::3,0], unc_lap[:, ::3,1], '-c')
+            ax.plot(unc_lap[:, ::args.skip,0], unc_lap[:, ::args.skip,1], '-c')
 
     # Load and show map
     if args.mapbase:
@@ -100,7 +104,7 @@ if __name__ == '__main__':
     # Show GVI results
     ax.add_collection(lc)
     ax.plot(mu[:, 0], mu[:, 1], 'r.')
-    ax.plot(unc[:, ::3,0], unc[:, ::3,1], '-k')
+    ax.plot(unc[:, ::args.skip,0], unc[:, ::args.skip,1], '-k')
     ax.axis('equal')
     #ax.plot(p.link_odo[:,0], p.link_odo[:,1], 'x')
 
