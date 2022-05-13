@@ -5,6 +5,7 @@
 import argparse
 import functools
 import json
+import pathlib
 import signal
 import time
 
@@ -310,15 +311,42 @@ def search_then_converge(eta0, tau, c):
 
 if __name__ == '__main__':
     # Define and parse command-line arguments
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, fromfile_prefix_chars='@'
+    )
     parser.add_argument('posegraph_file', type=open)
     parser.add_argument(
         '--map', default=False, action=argparse.BooleanOptionalAction,
         help='Perform MAP estimation.',
     )
     parser.add_argument(
-        '--stoch', default=True, action=argparse.BooleanOptionalAction,
-        help='Perform GVI estimation with stochastic optimization.',
+        '--niter', default=10_000_000, type=int,
+        help='Number of iterations of the stochastic optimization.',
+    )
+    parser.add_argument(
+        '--mu0', choices=['tbx', 'odom', 's-tree-1'],
+        help='Initial guess for GVI mean'
+    )
+    parser.add_argument(
+        '--lrate0', default=1e-2, type=float,
+        help='Stochastic optimization initial learning rate.',
+    )
+    parser.add_argument(
+        '--lrate_tau', default=500, type=float,
+        help='Stochastic optimization learning rate "tau" parameter.',
+    )
+    parser.add_argument(
+        '--lrate_c', default=100, type=float,
+        help='Stochastic optimization asymptotic learning rate numerator.',
+    )
+    parser.add_argument(
+        '--progress', type=pathlib.Path, 
+        default=pathlib.Path('data/gvi_progress.npz'),
+        help='Save stochastic optimization progress to file.'
+    )
+    parser.add_argument(
+        '--result', type=pathlib.Path,
+        help='Save GVI result to file.'
     )
     args = parser.parse_args()
 
@@ -333,10 +361,13 @@ if __name__ == '__main__':
     Nsamp = 2**13
 
     # Create initial guess for mean
-    mu0 = tbx_pose[1:]
-    #mu0 = odo_pose[1:]
-    #mu0 = p.link_odo[1:]
-
+    if args.mu0 == 'tbx':
+        mu0 = tbx_pose[1:]
+    elif args.mu0 == 'odom':
+        mu0 = odo_pose[1:]
+    else: 
+        mu0 = p.link_odo[1:]
+    
     # Perform MAP estimation, if requested
     if args.map:
         x0map = mu0.flatten()
@@ -358,27 +389,19 @@ if __name__ == '__main__':
     # Create initial guess of scale
     logdiag0 = jnp.tile(np.log([0.2, 0.2, 0.025]), p.N)
     Sld0 = jnp.diag(logdiag0)
-    #H0 = np.array(p.logpdf_hess(mu0).reshape(p.N * 3, p.N * 3), float)
-    #cov0 = np.linalg.inv(-H0)
-    #S0 = np.linalg.cholesky(cov0)
-    #Sld0 = jnp.tril(S0, k=-1) + jnp.diag(jnp.log(S0.diagonal()))
     dec = [mu0, Sld0]
 
     # Initialize stochastic optimization
     mincost = np.inf
-    #Sld_scale = 0.25
     seed = 1
     last_save_time = -np.inf
-    sched = search_then_converge(1e-2, tau=500, c=100)
-    optimizer = optax.adabelief(sched)
+    sched = search_then_converge(args.lrate0, args.lrate_tau, args.lrate_c)
+    optimizer = optax.adam(sched)
     opt_state = optimizer.init(dec)
     np.random.seed(seed)
     
-    if not args.stoch:
-        raise SystemExit
-
     # Perform optimization
-    for i in range(100_000_000):
+    for i in range(args.niter):
         # Sample random population
         sampler = stats.qmc.MultivariateNormalQMC(np.zeros(6))
         e = jnp.asarray(sampler.random(Nsamp))
@@ -398,26 +421,14 @@ if __name__ == '__main__':
         if any(jnp.any(~jnp.isfinite(v)) for v in grad_i):
             break
 
-        # Compute and apply scaling (preconditioner)
-        #S = dec[1]
-        #sigma = jnp.sqrt(jnp.sum(S ** 2, axis=1)).reshape(p.N, 3)
-        #scaled_mu_b = (S.T @ grad_i[0].flatten()).reshape(p.N, 3)
-        #scaled_Sld_b = S.T @ jnp.tril(grad_i[1], -1) + jnp.diag(grad_i[1].diagonal())
-        #scaled_Sld_b = Sld_scale * grad_i[1]
-        #scaled_grad_i = [scaled_mu_b, scaled_Sld_b]
-
-        #scaled_upd, opt_state = optimizer.update(scaled_grad_i, opt_state)
-        #mu_upd = (S @ scaled_upd[0].flatten()).reshape(p.N, 3)
-        #Sld_upd = S @ jnp.tril(scaled_upd[1], -1) + jnp.diag(scaled_upd[1].diagonal())
-        #Sld_upd = Sld_scale * scaled_upd[1]
-        #updates = [mu_upd, Sld_upd]
-
         updates, opt_state = optimizer.update(grad_i, opt_state)
-        updates[0] = 10 * updates[0]
         dec = optax.apply_updates(dec, updates)
 
         curr_time = time.time()
         if curr_time - last_save_time > 10:
-            p.save('gvi_progress.npz', *dec)
+            p.save(args.progress, *dec)
             last_save_time = curr_time
             print("progress saved")
+
+    # Save final result
+    p.save(args.result or args.progress, *dec)

@@ -93,8 +93,8 @@ if __name__ == '__main__':
     # Load and show map
     if args.mapbase:
         mapbase = args.mapbase.expanduser()
-        img = plt.imread(mapbase.with_suffix('.pgm'))
-        imgcfg = yaml.safe_load(open(mapbase.with_suffix('.yaml')))
+        img = plt.imread(mapbase.with_name(mapbase.name + '.pgm'))
+        imgcfg = yaml.safe_load(open(mapbase.with_name(mapbase.name + '.yaml')))
         imgsz = np.array(img.shape)[::-1] * imgcfg['resolution']
         imgorigin = imgcfg['origin']
         imgextent = np.r_[np.r_[0, imgsz[0]] + imgorigin[0], 
