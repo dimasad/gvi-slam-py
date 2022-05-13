@@ -1,0 +1,3 @@
+data/aces_progress.gvi.npz
+--posegraph_file=data/aces.posegraph.json
+--mapbase=data/aces.corrected

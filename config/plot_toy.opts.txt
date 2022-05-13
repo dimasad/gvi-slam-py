@@ -1,0 +1,3 @@
+toy_progress.npz
+--posegraph_file=data/toy_with_map.posegraph.json
+--ellipse-skip=1

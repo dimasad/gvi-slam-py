@@ -1,0 +1,6 @@
+data/aces.posegraph.json
+--progress=data/aces_odom_progress.gvi.npz
+--mu0=odom
+--lrate0=5e-3
+--lrate_tau=10000
+--lrate_c=500

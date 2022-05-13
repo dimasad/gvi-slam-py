@@ -1,0 +1,3 @@
+data/intel.gvi.npz
+--posegraph_file=data/intel.posegraph.json
+--mapbase=data/intel.corrected
