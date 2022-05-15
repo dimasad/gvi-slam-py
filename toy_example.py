@@ -22,12 +22,14 @@ import utils
 
 if __name__ == '__main__':
     # Define and parse command-line arguments
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, fromfile_prefix_chars='@'
+    )
     parser.add_argument(
         '--posegraph_file', default='data/toy.posegraph.json', type=open
     )
     parser.add_argument(
-        '--save-map', type=argparse.FileType('w'),  dest='save_map'
+        '--save-map', type=argparse.FileType('w'),  dest='save_map',
     )
     parser.add_argument(
         '--stoch', default=True, action=argparse.BooleanOptionalAction,
@@ -84,6 +86,7 @@ if __name__ == '__main__':
     S_glap = np.linalg.cholesky(np.linalg.inv(-Hg))
     Sld_glap = p.disassemble_S(S_glap)
     S_gposition = p.S_position(Sld_glap)
+    p.save('data/toy_gauss.laplace.npz', gx, Sld_glap)
 
     # Save updated JSON with MAP estimate
     if args.save_map is not None:
@@ -138,6 +141,9 @@ if __name__ == '__main__':
 
         curr_time = time.time()
         if curr_time - last_save_time > 10:
-            p.save('toy_progress.npz', *dec)
+            p.save('data/toy_progress.gvi.npz', *dec)
             last_save_time = curr_time
             print("progress saved")
+
+    # Save final solution
+    p.save('data/toy.gvi.npz', *dec)

@@ -35,10 +35,10 @@ if __name__ == '__main__':
         'solution', help='Saved solution to the GVI problem.'
     )
     parser.add_argument(
-        '--sol2', help='Show second saved solution to the GVI problem.'
+        'solg', help='Laplace\'s method with Gaussian model.'
     )
     parser.add_argument(
-        '--posegraph_file', type=pathlib.Path, help='Posegraph JSON file.'
+        'posegraph_file', type=pathlib.Path, help='Posegraph JSON file.'
     )
     parser.add_argument(
         '--mapbase', type=pathlib.Path
@@ -64,8 +64,9 @@ if __name__ == '__main__':
     fig.clf()
     ax = fig.gca()
 
-    # Load solution
+    # Load solutions
     p, (mu, Sld) = gvi_slam.DenseProblem.load(args.solution)
+    _, (gx, gSld) = gvi_slam.DenseProblem.load(args.solg)
 
     # Assemble GVI results
     mu_anchored = p.prepend_anchor(mu)
@@ -73,10 +74,6 @@ if __name__ == '__main__':
     th = np.linspace(0, 2*np.pi, 30)
     unit_circle = np.c_[np.cos(th), np.sin(th)]
     unc = 2*np.inner(unit_circle, S_position) + mu[:,:2]
-    links = zip(mu_anchored[p.i, :2], mu_anchored[p.j, :2])
-    lc = matplotlib.collections.LineCollection(
-        links, colors='g', linewidths=0.5
-    )
 
     # Parse JSON problem data
     if args.posegraph_file:
@@ -84,7 +81,6 @@ if __name__ == '__main__':
             open(args.posegraph_file.expanduser())
         )
         ax.plot(tbx_pose[:, 0], tbx_pose[:, 1], 'b.')
-        #ax.plot(odo_pose[:,0], odo_pose[:,1], 'x')
         if args.laplace:
             H = p.logpdf_hess(tbx_pose[1:]).reshape(p.N*3, p.N*3)
             S_lap = np.linalg.cholesky(np.linalg.inv(-H))            
@@ -105,10 +101,32 @@ if __name__ == '__main__':
         ax.imshow(img.max() - img, extent=imgextent, cmap='Greys')
 
     # Show GVI results
-    ax.add_collection(lc)
+    for s in link_specs:
+        ind = np.r_[s['source'], s['target']]
+        if s.get('outlier'):
+            plt.plot(mu_anchored[ind,0], mu_anchored[ind,1], ':g')
+        else:
+            plt.plot(mu_anchored[ind,0], mu_anchored[ind,1], '-g')
     ax.plot(mu[:, 0], mu[:, 1], 'r.')
     ax.plot(unc[:, ::args.skip,0], unc[:, ::args.skip,1], '-k')
     ax.axis('equal')
+
+    # Assemble and show gaussian results
+    gx_anchored = p.prepend_anchor(gx)
+    Sg_position = p.S_position(gSld)
+    gunc = 2*np.inner(unit_circle, Sg_position) + gx[:,:2]
+    glinks = zip(gx_anchored[p.i, :2], gx_anchored[p.j, :2])
+    glc = matplotlib.collections.LineCollection(
+        glinks, colors='m', linewidths=0.5
+    )
+    for s in link_specs:
+        ind = np.r_[s['source'], s['target']]
+        if s.get('outlier'):
+            plt.plot(gx_anchored[ind,0], gx_anchored[ind,1], ':m')
+        else:
+            plt.plot(gx_anchored[ind,0], gx_anchored[ind,1], '-m')
+    ax.plot(gx_anchored[:, 0], gx_anchored[:, 1], 'mx')
+    ax.plot(gunc[:, ::args.skip,0], gunc[:, ::args.skip,1], '-m')
 
     if args.interactive:
         fig.show()
