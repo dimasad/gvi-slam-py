@@ -53,7 +53,7 @@ if __name__ == '__main__':
     # Create problem structure
     p = gvi_slam.LinkwiseDenseProblem(i, j, y, cov, odo_pose[0])
     elbo_grad = jax.jit(p.elbo_grad)
-    Nsamp = 2**16
+    Nsamp = 2**17
 
     # Run MAP estimation
     x0map = p.link_odo[1:].flatten()
@@ -100,7 +100,8 @@ if __name__ == '__main__':
     mu0 = mapur(mapsol.x)
     H = p.logpdf_hess(mu0).reshape(p.N*3, p.N*3)
     S_lap = np.linalg.cholesky(np.linalg.inv(-H))
-    dec = [mu0, S_lap]
+    Sld_lap = p.disassemble_S(S_lap)
+    dec = [mu0, Sld_lap]
     
     # Exit if stochastic optimization not needed
     if not args.stoch:
@@ -110,7 +111,7 @@ if __name__ == '__main__':
     mincost = np.inf
     seed = 1
     last_save_time = -np.inf
-    sched = gvi_slam.search_then_converge(5e-2, tau=50, c=8)
+    sched = gvi_slam.search_then_converge(5e-3, tau=50, c=8)
     optimizer = optax.adam(sched)
     opt_state = optimizer.init(dec)
     np.random.seed(seed)
