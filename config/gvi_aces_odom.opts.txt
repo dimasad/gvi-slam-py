@@ -4,3 +4,4 @@ data/aces.posegraph.json
 --lrate0=5e-3
 --lrate_tau=10000
 --lrate_c=500
+--niter=1_400_000

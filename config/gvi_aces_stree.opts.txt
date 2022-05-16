@@ -1,0 +1,6 @@
+data/aces.posegraph.json
+--progress=data/aces_stree_progress.gvi.npz
+--mu0=s-tree-1
+--lrate0=5e-3
+--lrate_tau=10000
+--lrate_c=500
